@@ -67,7 +67,7 @@ links.post("/", async (c) => {
     validated = createLinkSchema.parse(body);
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: err.errors[0]?.message || "Validation error" }, 400);
+      return c.json({ error: err.issues[0]?.message || "Validation error" }, 400);
     }
     return c.json({ error: "Invalid request" }, 400);
   }
@@ -158,7 +158,7 @@ links.patch("/:slug", async (c) => {
     validated = updateLinkSchema.parse(body);
   } catch (err) {
     if (err instanceof z.ZodError) {
-      return c.json({ error: err.errors[0]?.message || "Validation error" }, 400);
+      return c.json({ error: err.issues[0]?.message || "Validation error" }, 400);
     }
     return c.json({ error: "Invalid request" }, 400);
   }

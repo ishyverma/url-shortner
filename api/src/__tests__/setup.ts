@@ -1,34 +1,28 @@
-import { beforeStart } from "vitest/setup";
-import { spawn } from "bun";
-import { resolve } from "path";
+import { beforeAll, afterAll } from "vitest";
 
-const serverPath = resolve(__dirname, "../src/server.ts");
+declare global {
+  var __serverProcess: { kill: () => void } | undefined;
+}
 
-let serverProcess: any;
+let serverProcess: { kill: () => void } | undefined;
 
-beforeStart(async () => {
-  const proc = spawn(["bun", "run", serverPath], {
-    stdio: ["ignore", "pipe", "pipe"],
+beforeAll(async () => {
+  const { spawn } = await import("child_process");
+  const path = await import("path");
+  
+  const serverPath = path.join(process.cwd(), "src", "server.ts");
+  
+  serverProcess = spawn("bun", ["run", serverPath], {
+    stdio: "ignore",
+    detached: true,
   });
   
-  proc.stdout?.pipeTo?.(new WritableStream({
-    write(chunk) {
-      process.stdout.write(chunk);
-    }
-  }));
-  
-  proc.stderr?.pipeTo?.(new WritableStream({
-    write(chunk) {
-      process.stderr.write(chunk);
-    }
-  }));
-
   await new Promise(r => setTimeout(r, 2000));
   
-  globalThis.__serverProcess = proc;
+  globalThis.__serverProcess = serverProcess;
 });
 
-after(() => {
+afterAll(() => {
   if (globalThis.__serverProcess) {
     globalThis.__serverProcess.kill();
   }
