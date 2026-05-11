@@ -1,7 +1,9 @@
+version: '3.8'
+
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
-    container_name: url-shortener-db
+    container_name: linkforge-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -18,12 +20,59 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: url-shortener-redis
+    container_name: linkforge-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
 
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: linkforge-api
+    ports:
+      - "3002:3002"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/url_shortener
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=development
+      - PORT=3002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./api:/app
+      - /app/node_modules
+      - /app/.bun
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: linkforge-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXTAUTH_SECRET=development-secret-change-in-production
+      - NEXTAUTH_URL=http://localhost:3000
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-your-client-id}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-your-client-secret}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/url_shortener
+      - NEXT_PUBLIC_API_URL=http://api:3002
+    depends_on:
+      - api
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  default:
+    name: linkforge-network

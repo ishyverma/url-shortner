@@ -244,7 +244,7 @@ links.get("/:slug/qr", async (c) => {
           margin: 2,
           color: { dark: "#000000", light: "#ffffff" }
         });
-        return c.body(buffer, 200, { "Content-Type": "image/png" });
+        return c.body(new Uint8Array(buffer), 200, {"Content-Type": "image/png"});
     }
   } catch (err) {
     logger.error(err);

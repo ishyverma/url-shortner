@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+*.log
+.env*
+!.env.example
+coverage
+.vscode
+.DS_Store
+*.tgz
+*.map
+.next
+.next/cache

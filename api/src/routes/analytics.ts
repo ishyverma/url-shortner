@@ -41,27 +41,22 @@ async function getTimescaleStats(linkId: string): Promise<Partial<AggregatedStat
     const isTimescale = await checkTimescaleAvailable();
     if (!isTimescale) return {};
 
-    const hourly = await prisma.$queryRaw<{ bucket: Date; total_clicks: bigint; unique_visitors: bigint }[]>`
-      SELECT 
-        time_bucket('1 hour', clickedAt) AS bucket,
-        SUM(total_clicks) as total_clicks,
-        SUM(unique_visitors) as unique_visitors
-      FROM click_stats_hourly
-      WHERE linkId = ${linkId}
-        AND bucket >= NOW() - INTERVAL '30 days'
-      GROUP BY bucket
-      ORDER BY bucket DESC
-      LIMIT 1000
-    `;
+    const result = await prisma.$queryRawUnsafe(
+      `SELECT
+        COALESCE(SUM(CASE WHEN bucket >= NOW() - INTERVAL '24 hours' THEN total_clicks ELSE 0 END), 0)::bigint AS last24h,
+        COALESCE(SUM(CASE WHEN bucket >= NOW() - INTERVAL '7 days' THEN total_clicks ELSE 0 END), 0)::bigint AS last7d,
+        COALESCE(SUM(total_clicks), 0)::bigint AS last30d
+      FROM click_stats_daily
+      WHERE linkId = $1`,
+      linkId
+    ) as { last24h: bigint; last7d: bigint; last30d: bigint }[];
 
-    const last24h = hourly.filter(h => new Date(h.bucket) > new Date(Date.now() - 86400000));
-    const last7d = hourly.filter(h => new Date(h.bucket) > new Date(Date.now() - 7 * 86400000));
-    const last30d = hourly;
+    if (result.length === 0) return {};
 
     return {
-      last24hClicks: Number(last24h.reduce((sum, h) => sum + h.total_clicks, 0n)),
-      last7dClicks: Number(last7d.reduce((sum, h) => sum + h.total_clicks, 0n)),
-      last30dClicks: Number(last30d.reduce((sum, h) => sum + h.total_clicks, 0n)),
+      last24hClicks: Number(result[0].last24h),
+      last7dClicks: Number(result[0].last7d),
+      last30dClicks: Number(result[0].last30d),
     };
   } catch (err) {
     logger.debug({ err }, "TimescaleDB stats not available, using fallback");
@@ -173,21 +168,27 @@ analytics.get("/:slug/timeseries", async (c) => {
       return c.json({ error: "Link not found" }, 404);
     }
 
-    const bucketMinutes = interval === "hour" ? 60 : interval === "day" ? 1440 : 10080;
-    const groupByField = groupBy === "unique" ? "DISTINCT visitorHash" : "*";
+    let truncateUnit: string;
+    if (interval === "hour") {
+      truncateUnit = "hour";
+    } else if (interval === "week") {
+      truncateUnit = "week";
+    } else {
+      truncateUnit = "day";
+    }
 
-    const events = await prisma.$queryRaw<{ bucket: Date; clicks: bigint; unique: bigint }[]>`
-      SELECT 
-        time_bucket('${bucketMinutes} minutes', clickedAt) AS bucket,
-        COUNT(*) AS clicks,
-        COUNT(DISTINCT visitorHash) AS unique
-      FROM "ClickEvent"
-      WHERE linkId = ${link.id}
-        ${from ? prisma.$queryRaw`AND clickedAt >= ${new Date(from)}` : prisma.$queryRaw``}
-        ${to ? prisma.$queryRaw`AND clickedAt <= ${new Date(to)}` : prisma.$queryRaw``}
-      GROUP BY bucket
-      ORDER BY bucket ASC
-    `;
+    let events: { bucket: Date; clicks: bigint; unique: bigint }[];
+    if (from && to) {
+      events = await prisma.$queryRawUnsafe(
+        `SELECT DATE_TRUNC('${truncateUnit}', "clickedAt") AS bucket, COUNT(*)::bigint AS clicks, COUNT(DISTINCT "visitorHash")::bigint AS unique FROM "ClickEvent" WHERE "linkId" = $1 AND "clickedAt" >= $2 AND "clickedAt" <= $3 GROUP BY bucket ORDER BY bucket ASC`,
+        link.id, new Date(from), new Date(to)
+      ) as typeof events;
+    } else {
+      events = await prisma.$queryRawUnsafe(
+        `SELECT DATE_TRUNC('${truncateUnit}', "clickedAt") AS bucket, COUNT(*)::bigint AS clicks, COUNT(DISTINCT "visitorHash")::bigint AS unique FROM "ClickEvent" WHERE "linkId" = $1 GROUP BY bucket ORDER BY bucket ASC`,
+        link.id
+      ) as typeof events;
+    }
 
     const data: TimeseriesPoint[] = events.map(e => ({
       timestamp: e.bucket.toISOString(),
@@ -195,7 +196,7 @@ analytics.get("/:slug/timeseries", async (c) => {
       uniqueVisitors: Number(e.unique),
     }));
 
-    return c.json({ data, interval, groupBy });
+    return c.json({ data, interval, groupBy, source: "raw_query" });
   } catch (err) {
     logger.error(err);
     return c.json({ error: "Failed to fetch timeseries" }, 500);
@@ -218,21 +219,42 @@ analytics.get("/:slug/countries", async (c) => {
 
     const data = await prisma.clickEvent.groupBy({
       by: ["country"],
-      where: { linkId: link.id, country: { not: null } },
+      where: { 
+        linkId: link.id,
+        country: { not: null },
+      },
       _count: { country: true },
       orderBy: { _count: { country: "desc" } },
       take: limit,
     });
 
-    const total = data.reduce((sum, d) => sum + d._count.country, 0);
-
-    return c.json({
-      data: data.map(d => ({
-        country: d.country || "Unknown",
-        clicks: d._count.country,
-        percentage: total > 0 ? Math.round((d._count.country / total) * 10000) / 100 : 0,
-      })),
+    const unknownCount = await prisma.clickEvent.count({
+      where: { 
+        linkId: link.id,
+        OR: [
+          { country: null },
+          { country: "" },
+        ],
+      },
     });
+
+    const total = data.reduce((sum, d) => sum + d._count.country, 0) + unknownCount;
+
+    const responseData = data.map(d => ({
+      country: d.country,
+      clicks: d._count.country,
+      percentage: total > 0 ? Math.round((d._count.country / total) * 10000) / 100 : 0,
+    }));
+
+    if (unknownCount > 0) {
+      responseData.push({
+        country: "Unknown",
+        clicks: unknownCount,
+        percentage: total > 0 ? Math.round((unknownCount / total) * 10000) / 100 : 0,
+      });
+    }
+
+    return c.json({ data: responseData });
   } catch (err) {
     logger.error(err);
     return c.json({ error: "Failed to fetch countries" }, 500);
