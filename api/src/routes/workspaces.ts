@@ -32,19 +32,50 @@ workspaces.post("/", async (c) => {
   const body = await c.req.json();
   const { name, slug, ownerId } = body;
 
+  if (!ownerId) {
+    return c.json({ error: "ownerId is required" }, 400);
+  }
+
   try {
     const apiKey = nanoid(32);
+    const finalSlug = slug || (name || "workspace").toLowerCase().replace(/\s+/g, "-") + "-" + nanoid(6);
+    const finalOwnerId = ownerId || "default-user";
+
+    let user = await prisma.user.findUnique({ where: { id: finalOwnerId } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          id: finalOwnerId,
+          email: `${finalOwnerId}@placeholder.local`,
+          name: finalOwnerId,
+        },
+      }).catch(() => null);
+    }
+
+    if (!user) {
+      const workspace = await prisma.workspace.create({
+        data: {
+          id: nanoid(),
+          name: name || "My Workspace",
+          slug: finalSlug,
+          ownerId: finalOwnerId,
+          apiKey,
+        },
+      });
+
+      return c.json({ data: workspace }, 201);
+    }
 
     const workspace = await prisma.workspace.create({
       data: {
         id: nanoid(),
         name: name || "My Workspace",
-        slug: slug || name?.toLowerCase().replace(/\s+/g, "-"),
-        ownerId,
+        slug: finalSlug,
+        ownerId: user.id,
         apiKey,
         members: {
           create: {
-            userId: ownerId,
+            userId: user.id,
             role: "owner",
           },
         },
@@ -101,11 +132,26 @@ workspaces.post("/:id/members", async (c) => {
   const { userId, role } = await c.req.json();
 
   try {
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          id: userId,
+          email: `${userId}@placeholder.local`,
+          name: userId,
+        },
+      }).catch(() => null);
+    }
+
+    if (!user) {
+      return c.json({ error: "Failed to create user" }, 500);
+    }
+
     const member = await prisma.workspaceMember.create({
       data: {
         id: nanoid(),
         workspaceId,
-        userId,
+        userId: user.id,
         role: role || "member",
       },
     });

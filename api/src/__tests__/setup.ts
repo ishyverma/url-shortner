@@ -1,29 +1,42 @@
 import { beforeAll, afterAll } from "vitest";
+import { spawn } from "child_process";
 
-declare global {
-  var __serverProcess: { kill: () => void } | undefined;
+let serverProcess: ReturnType<typeof spawn> | undefined;
+
+export async function waitForServer(url: string, maxRetries = 20, delay = 500): Promise<boolean> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok || res.status < 500) {
+        return true;
+      }
+    } catch {
+      // server not ready yet
+    }
+    await new Promise(r => setTimeout(r, delay));
+  }
+  return false;
 }
 
-let serverProcess: { kill: () => void } | undefined;
-
 beforeAll(async () => {
-  const { spawn } = await import("child_process");
-  const path = await import("path");
-  
-  const serverPath = path.join(process.cwd(), "src", "server.ts");
-  
+  const serverPath = "./src/server.ts";
+  const port = process.env.PORT || "3002";
+  const serverUrl = `http://localhost:${port}`;
+
   serverProcess = spawn("bun", ["run", serverPath], {
-    stdio: "ignore",
-    detached: true,
+    stdio: "pipe",
+    env: { ...process.env },
   });
-  
-  await new Promise(r => setTimeout(r, 2000));
-  
-  globalThis.__serverProcess = serverProcess;
+
+  const ready = await waitForServer(serverUrl);
+  if (!ready) {
+    throw new Error("Server failed to start");
+  }
 });
 
 afterAll(() => {
-  if (globalThis.__serverProcess) {
-    globalThis.__serverProcess.kill();
+  if (serverProcess) {
+    serverProcess.kill("SIGTERM");
+    serverProcess = undefined;
   }
 });

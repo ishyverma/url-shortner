@@ -119,8 +119,14 @@ links.post("/", async (c) => {
       },
     });
 
-    // Cache in Redis
-    await redis.setex(`link:${slug}`, 3600, link.originalUrl);
+    const linkData = JSON.stringify({ 
+      id: link.id, 
+      workspaceId: link.workspaceId, 
+      originalUrl: link.originalUrl,
+      isActive: link.isActive,
+      expiresAt: link.expiresAt?.toISOString() || null
+    });
+    await redis.setex(`link:${slug}`, 3600, linkData);
 
     return c.json({ data: link }, 201);
   } catch (err) {
@@ -206,6 +212,43 @@ links.delete("/:slug", async (c) => {
     }
     logger.error(err);
     return c.json({ error: "Failed to delete link" }, 500);
+  }
+});
+
+links.get("/:slug/qr", async (c) => {
+  const slug = c.req.param("slug");
+  const size = parseInt(c.req.query("size") || "200");
+  const format = c.req.query("format") || "png";
+
+  try {
+    const link = await prisma.link.findUnique({ where: { slug } });
+    if (!link) {
+      return c.json({ error: "Link not found" }, 404);
+    }
+
+    const QRCode = await import("qrcode");
+    const baseUrl = process.env.BASE_URL || "http://localhost:3002";
+    const shortUrl = `${baseUrl}/${slug}`;
+
+    let output: string;
+    switch (format) {
+      case "svg":
+        output = await QRCode.toString(shortUrl, { type: "svg", width: Math.min(size, 1000) });
+        return c.text(output, 200, { "Content-Type": "image/svg+xml" });
+      case "utf8":
+        output = await QRCode.toString(shortUrl, { type: "terminal", width: Math.min(Math.floor(size / 8), 50) });
+        return c.text(output);
+      default:
+        const buffer = await QRCode.toBuffer(shortUrl, { 
+          width: Math.min(size, 1000),
+          margin: 2,
+          color: { dark: "#000000", light: "#ffffff" }
+        });
+        return c.body(buffer, 200, { "Content-Type": "image/png" });
+    }
+  } catch (err) {
+    logger.error(err);
+    return c.json({ error: "Failed to generate QR code" }, 500);
   }
 });
 

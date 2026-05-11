@@ -34,6 +34,9 @@ app.route("/", redirect);
 
 app.notFound((c) => c.json({ error: "Not Found" }, 404));
 app.onError((err, c) => {
+  if (err instanceof SyntaxError && err.message.includes("JSON")) {
+    return c.json({ error: "Invalid JSON" }, 400);
+  }
   logger.error(err);
   return c.json({ error: "Internal Server Error" }, 500);
 });
